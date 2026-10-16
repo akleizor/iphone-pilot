@@ -1,0 +1,550 @@
+diff --git a/DeviceKitTests/JSONRPC/Handlers/DumpUI.swift b/DeviceKitTests/JSONRPC/Handlers/DumpUI.swift
+index cc24b61..5ed0ebc 100644
+--- a/DeviceKitTests/JSONRPC/Handlers/DumpUI.swift
++++ b/DeviceKitTests/JSONRPC/Handlers/DumpUI.swift
+@@ -16,6 +16,25 @@ extension Logger {
+ 
+ struct DumpUIRequest: Codable {
+     let format: String?
++    // Parts of the dump to leave out, each one more cross-process query:
++    // "alerts", "focus", "statusBars", "safari", "frame". Default: statusBars
++    // (the phone's clock and signal, which no agent acts on).
++    let skip: [String]?
++    // Snapshot key paths the reduced snapshot fetches; "reduced" in skip falls
++    // back to XCUIElement.snapshot(), which fetches every attribute.
++    let keyPaths: [String]?
++}
++
++// DumpTiming records how long each part of a dump took, returned as "timing"
++// in the json format so the cost of every part can be measured on a device.
++@MainActor
++final class DumpTiming {
++    var ms: [String: JSONValue] = [:]
++    func run<T>(_ part: String, _ block: () throws -> T) rethrows -> T {
++        let start = Date()
++        defer { ms[part] = .int(Int(Date().timeIntervalSince(start) * 1000)) }
++        return try block()
++    }
+ }
+ 
+ private enum DumpUIFormat: String {
+@@ -39,6 +58,13 @@ struct DumpUIMethodHandler: RPCMethodHandler {
+         bundleIdentifier: "com.apple.springboard"
+     )
+     private let snapshotMaxDepth = 60
++    private static var lastDeviceFrame: CGRect?
++    static let dumpKeyPaths = [
++        "elementType", "identifier", "label", "value", "placeholderValue",
++        "frame", "enabled", "selected", "windowContextID",
++        // web content reports its own focus here, apart from the keyboard-focus query
++        "hasFocus",
++    ]
+ 
+     private let logger = Logger(
+         subsystem: Bundle.main.bundleIdentifier!,
+@@ -49,6 +75,10 @@ struct DumpUIMethodHandler: RPCMethodHandler {
+         let request = try decodeParams(DumpUIRequest.self, from: params)
+ 
+         let format = DumpUIFormat(from: request.format)
++        let skip = Set(request.skip ?? ["statusBars"])
++        let keyPaths = request.keyPaths ?? Self.dumpKeyPaths
++        let timing = DumpTiming()
++        let start = Date()
+         logger.info("dump_ui requested with format: \(format.rawValue)")
+ 
+         do {
+@@ -65,12 +95,21 @@ struct DumpUIMethodHandler: RPCMethodHandler {
+             ) {
+                 try getAppViewHierarchy(
+                     foregroundApp: foregroundApp,
+-                    excludeKeyboardElements: false
++                    excludeKeyboardElements: false,
++                    skip: skip,
++                    keyPaths: keyPaths,
++                    timing: timing
+                 )
+             }
+ 
+             logger.info("[Done] View hierarchy snapshot for \(foregroundApp)")
+-            return try formatResponse(axElement: appViewHierarchy, format: format)
++            var response = try formatResponse(axElement: appViewHierarchy, format: format)
++            if format == .json, case .object(var root) = response {
++                timing.ms["total"] = .int(Int(Date().timeIntervalSince(start) * 1000))
++                root["timing"] = .object(timing.ms)
++                response = .object(root)
++            }
++            return response
+         } catch let error as RPCMethodError {
+             throw error
+         } catch let error as NSError {
+@@ -101,24 +140,56 @@ struct DumpUIMethodHandler: RPCMethodHandler {
+ 
+     private func getAppViewHierarchy(
+         foregroundApp: XCUIApplication,
+-        excludeKeyboardElements: Bool
++        excludeKeyboardElements: Bool,
++        skip: Set<String>,
++        keyPaths: [String],
++        timing: DumpTiming
+     ) throws -> AXElement {
+-        SystemPermissionManager.handleSystemPermissionAlertIfNeeded(foregroundApp: foregroundApp)
+-        var appHierarchy = try getHierarchyWithFallback(foregroundApp)
++        if !skip.contains("alerts") {
++            timing.run("alerts") { SystemPermissionManager.handleSystemPermissionAlertIfNeeded(foregroundApp: foregroundApp) }
++        }
++        // the attributes the json dump reads, windowContextID for nested windows
++        // (keyboards, remote alerts) and hasFocus; falls back to the full snapshot
++        var appHierarchy: AXElement
++        if !skip.contains("reduced"), let dict = timing.run("reduced", {
++            AXClientProxy.sharedClient().snapshotDictionary(forProcessIdentifier: foregroundApp.processID, keyPaths: keyPaths)
++        }) {
++            appHierarchy = AXElement(dict).resolvingNestedWindowOffsets()
++        } else {
++            appHierarchy = try timing.run("snapshot") { try getHierarchyWithFallback(foregroundApp) }
++        }
+ 
+-        if let focusedFrame = keyboardFocusedElementFrame(foregroundApp) {
++        // keyboard focus needs a predicate query over the whole app, and only a
++        // text input can hold it. Gate on inputs, not on a keyboard element: a
++        // third-party keyboard never shows up in the app's tree.
++        let inputs: [XCUIElement.ElementType] = [.textField, .secureTextField, .textView, .searchField]
++        if !skip.contains("focus"), inputs.contains(where: { appHierarchy.contains(type: $0.rawValue) }),
++           let focusedFrame = timing.run("focus", { keyboardFocusedElementFrame(foregroundApp) }) {
+             appHierarchy.markKeyboardFocus(at: focusedFrame)
+         }
+ 
+-        let statusBars = logger.measure(message: "Fetch status bar hierarchy") {
++        let statusBars = skip.contains("statusBars") ? [] : timing.run("statusBars") {
+             fullStatusBars(springboardApplication)
+         } ?? []
+ 
+-        let safariWebViewHierarchy = logger.measure(message: "Fetch Safari WebView hierarchy") {
++        let safariWebViewHierarchy = skip.contains("safari") ? nil : timing.run("safari") {
+             getSafariWebViewHierarchy()
+         }
+ 
+-        let deviceFrame = springboardApplication.frame
++        guard !skip.contains("frame") else {
++            return buildRootElement(app: appHierarchy, statusBars: statusBars, safari: safariWebViewHierarchy)
++        }
++        // The device frame is a SpringBoard query (~60 ms). A full-screen app's
++        // frame equals it, so while the app frame matches the last device frame
++        // nothing has moved; any mismatch (rotation, split view) queries again.
++        let cached = Self.lastDeviceFrame.map { f -> AXFrame in
++            ["X": Double(f.minX), "Y": Double(f.minY), "Width": Double(f.width), "Height": Double(f.height)]
++        }
++        if let cached, cached == appHierarchy.frame {
++            return buildRootElement(app: appHierarchy, statusBars: statusBars, safari: safariWebViewHierarchy)
++        }
++        let deviceFrame = timing.run("frame") { springboardApplication.frame }
++        Self.lastDeviceFrame = deviceFrame
+         let deviceAxFrame: AXFrame = [
+             "X": Double(deviceFrame.minX),
+             "Y": Double(deviceFrame.minY),
+@@ -312,3 +383,9 @@ struct DumpUIMethodHandler: RPCMethodHandler {
+         return AXElement(snapshotDictionary).resolvingNestedWindowOffsets()
+     }
+ }
++
++extension AXElement {
++    func contains(type: UInt) -> Bool {
++        elementType == Int(type) || (children ?? []).contains { $0.contains(type: type) }
++    }
++}
+diff --git a/DeviceKitTests/JSONRPC/Handlers/IOFill.swift b/DeviceKitTests/JSONRPC/Handlers/IOFill.swift
+new file mode 100644
+index 0000000..fd203fa
+--- /dev/null
++++ b/DeviceKitTests/JSONRPC/Handlers/IOFill.swift
+@@ -0,0 +1,155 @@
++import XCTest
++import os
++
++// device.io.fill: a whole form in one round trip.
++//
++// Every XCUIElement access is a fresh accessibility query (60-150 ms each;
++// the first version spent 5 s on ~40 of them for three fields). So: ONE
++// snapshot resolves every field's frame up front; taps and typing go straight
++// to the event synthesizer by coordinate; and one snapshot at the end proves
++// every value.
++struct IOFillField: Codable {
++    let match: String      // label, placeholder, identifier or value
++    let text: String
++}
++
++struct IOFillRequest: Codable {
++    let fields: [IOFillField]
++    let submit: String?
++}
++
++@MainActor
++struct IOFillMethodHandler: RPCMethodHandler {
++    static let methodName = "device.io.fill"
++    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "IOFill")
++    private static let fieldTypes: Set<XCUIElement.ElementType> = [.textField, .secureTextField, .searchField, .textView]
++
++    private struct Node {
++        let type: XCUIElement.ElementType
++        let frame: CGRect
++        let keys: [String]     // identifier, label, placeholder, value
++        let value: String
++        let enabled: Bool
++        var placeholder: String { keys[2] }
++    }
++
++    func execute(params: JSONValue?) async throws -> JSONValue {
++        let request = try decodeParams(IOFillRequest.self, from: params)
++        let start = Date()
++        guard let app = RunningApp.getForegroundApp() else {
++            throw RPCMethodError.internalError("no foreground app")
++        }
++        let nodes = try snapshotNodes(app)
++        let targets = try request.fields.map { f in (try pick(nodes, f.match, types: Self.fieldTypes), f) }
++
++        // Per field: tap, a short settle for the keyboard to take focus, then
++        // the text as its own typing record (a touch path and a text path in
++        // one record types nothing). A tap that missed cannot pass silently:
++        // the final snapshot proves every value.
++        for (node, f) in targets {
++            try await tap(CGPoint(x: node.frame.midX, y: node.frame.midY))
++            try? await Task.sleep(nanoseconds: 80_000_000)
++            var path = PointerEventPath.pathForTextInput()
++            path.type(text: deletes(node.value, node.placeholder) + f.text, typingSpeed: 1000)
++            let rec = EventRecord(orientation: .portrait)
++            _ = rec.add(path)
++            try await RunnerDaemonProxy().synthesize(eventRecord: rec)
++        }
++
++        var bad = try await verify(app, targets, within: 1.5)
++        // A field that holds something else (an input method such as Pinyin
++        // turned letters into a composition) is retried once with XCTest's own
++        // typeText, which commits characters directly, then proven again.
++        if !bad.isEmpty {
++            for (node, f) in targets where bad[f.match] != nil {
++                let el = app.descendants(matching: node.type).matching(
++                    NSPredicate(format: "identifier == %@ OR label == %@ OR placeholderValue == %@", f.match, f.match, f.match)).firstMatch
++                guard el.exists else { continue }
++                el.tap()
++                el.typeText(deletes(bad[f.match] ?? "", node.placeholder) + f.text)
++            }
++            bad = try await verify(app, targets, within: 0)
++        }
++        guard bad.isEmpty else {
++            let msg = targets.compactMap { node, f -> String? in
++                guard let got = bad[f.match] else { return nil }
++                return "\(f.match): holds \(node.type == .secureTextField ? "\(got.count) chars" : "\"\(got)\"")"
++            }
++            throw RPCMethodError.internalError(msg.joined(separator: "; "))
++        }
++
++        if let submit = request.submit {
++            // The keyboard may cover the button: dismiss it, then re-read once.
++            try await RunnerDaemonProxy().send(string: "\n", typingFrequency: 1000)
++            let b = try pick(try snapshotNodes(app), submit, types: [.button])
++            guard b.enabled else {
++                throw RPCMethodError.internalError("\(submit): still disabled after filling")
++            }
++            try await tap(CGPoint(x: b.frame.midX, y: b.frame.midY))
++        }
++        let ms = Int(Date().timeIntervalSince(start) * 1000)
++        logger.info("fill \(request.fields.count) field(s) in \(ms) ms")
++        return .object(["ms": .double(Double(ms))])
++    }
++
++    private func snapshotNodes(_ app: XCUIApplication) throws -> [Node] {
++        var nodes: [Node] = []
++        func walk(_ s: XCUIElementSnapshot) {
++            let v = (s.value as? String) ?? ""
++            nodes.append(Node(type: s.elementType, frame: s.frame,
++                              keys: [s.identifier, s.label, s.placeholderValue ?? "", v],
++                              value: v, enabled: s.isEnabled))
++            s.children.forEach(walk)
++        }
++        walk(try app.snapshot())
++        return nodes
++    }
++
++    // verify returns the fields whose value does not match, keyed by match,
++    // with what they hold. Secure fields compare by length (their value is dots).
++    private func verify(_ app: XCUIApplication, _ targets: [(Node, IOFillField)], within: TimeInterval) async throws -> [String: String] {
++        let deadline = Date().addingTimeInterval(within)
++        var bad: [String: String] = [:]
++        repeat {
++            let now = try snapshotNodes(app).filter { Self.fieldTypes.contains($0.type) }
++            bad = [:]
++            for (node, f) in targets {
++                // Match the field again by type and origin: a field grows as
++                // it fills (Contacts' name rows widen), so an exact frame
++                // comparison found nothing and read the field as empty.
++                let got = now.first { $0.type == node.type && $0.frame.origin == node.frame.origin }?.value
++                    ?? now.first { $0.type == node.type && $0.frame.intersects(node.frame) }?.value ?? ""
++                let ok = node.type == .secureTextField ? got.count == f.text.count : got == f.text
++                if !ok { bad[f.match] = got }
++            }
++            if bad.isEmpty { break }
++            try? await Task.sleep(nanoseconds: 50_000_000)
++        } while Date() < deadline
++        return bad
++    }
++
++    // deletes clears an existing value (a placeholder is not a value).
++    private func deletes(_ value: String, _ placeholder: String) -> String {
++        value.isEmpty || value == placeholder ? "" : String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count)
++    }
++
++    private func pick(_ nodes: [Node], _ match: String, types: Set<XCUIElement.ElementType>) throws -> Node {
++        let m = match.lowercased()
++        let cands = nodes.filter { types.contains($0.type) }
++        for exact in [true, false] {
++            let hit = cands.filter { n in n.keys.contains { k in
++                let k = k.lowercased()
++                return !k.isEmpty && (exact ? k == m : k.contains(m))
++            } }
++            if hit.count == 1 { return hit[0] }
++            if hit.count > 1 { throw RPCMethodError.invalidParams("\(match): matches \(hit.count) elements") }
++        }
++        throw RPCMethodError.invalidParams("\(match): no such field")
++    }
++
++    private func tap(_ p: CGPoint) async throws {
++        let rec = EventRecord(orientation: .portrait)
++        _ = rec.addPointerTouchEvent(at: p, touchUpAfter: 0.03)
++        try await RunnerDaemonProxy().synthesize(eventRecord: rec)
++    }
++}
+diff --git a/DeviceKitTests/JSONRPC/Handlers/IOFind.swift b/DeviceKitTests/JSONRPC/Handlers/IOFind.swift
+new file mode 100644
+index 0000000..b6cad94
+--- /dev/null
++++ b/DeviceKitTests/JSONRPC/Handlers/IOFind.swift
+@@ -0,0 +1,68 @@
++import XCTest
++import os
++
++// device.find: answer "is this on screen, and where" with one predicate query
++// instead of a full tree dump (0.6-0.9 s). Returns the matches' type, label
++// and frame, capped. Generic: any element type, exact or contains match, and
++// an optional wait so "until it appears" polls on device, not over the wire.
++struct IOFindRequest: Codable {
++    let text: String
++    let type: String?      // "navigationBar", "button", "any" (default)
++    let contains: Bool?
++    let wait: Double?      // seconds to wait for at least one match
++    let limit: Int?
++}
++
++@MainActor
++struct IOFindMethodHandler: RPCMethodHandler {
++    static let methodName = "device.find"
++
++    private static let types: [String: XCUIElement.ElementType] = [
++        "any": .any, "navigationbar": .navigationBar, "button": .button, "cell": .cell,
++        "statictext": .staticText, "textfield": .textField, "securetextfield": .secureTextField,
++        "switch": .switch, "tab": .tab, "tabbar": .tabBar, "link": .link, "alert": .alert,
++        "searchfield": .searchField, "textview": .textView, "image": .image,
++    ]
++
++    func execute(params: JSONValue?) async throws -> JSONValue {
++        let r = try decodeParams(IOFindRequest.self, from: params)
++        let start = Date()
++        let t = Self.types[(r.type ?? "any").lowercased()] ?? .any
++        let p = (r.contains ?? false)
++            ? NSPredicate(format: "label CONTAINS[c] %@ OR identifier CONTAINS[c] %@ OR value CONTAINS[c] %@", r.text, r.text, r.text)
++            : NSPredicate(format: "label == %@ OR identifier == %@ OR value == %@", r.text, r.text, r.text)
++        let deadline = Date().addingTimeInterval(min(max(r.wait ?? 0, 0), 10))
++        var out: [JSONValue] = []
++        repeat {
++            out = []
++            // Re-resolve the foreground app every poll: right after a launch
++            // or deep link the previous app (or SpringBoard) is still in front.
++            guard let app = RunningApp.getForegroundApp() else {
++                try? await Task.sleep(nanoseconds: 50_000_000)
++                continue
++            }
++            let q = app.descendants(matching: t).matching(p)
++            // q.count, not firstMatch: firstMatch on no match waits out
++            // XCTest's ~2 s existence timeout (measured 2.2 s vs 0.13 s), and
++            // "not there yet" is this method's common answer.
++            let els = (0..<min(q.count, r.limit ?? 5)).map { q.element(boundBy: $0) }
++            for el in els {
++                guard let s = try? el.snapshot() else { continue }
++                out.append(.object([
++                    "type": .double(Double(s.elementType.rawValue)),
++                    "label": .string(s.label),
++                    "identifier": .string(s.identifier),
++                    "x": .double(Double(s.frame.minX)), "y": .double(Double(s.frame.minY)),
++                    "width": .double(Double(s.frame.width)), "height": .double(Double(s.frame.height)),
++                    "enabled": .bool(s.isEnabled),
++                ]))
++            }
++            if !out.isEmpty { break }
++            try? await Task.sleep(nanoseconds: 50_000_000)
++        } while Date() < deadline
++        return .object([
++            "matches": .array(out),
++            "ms": .double(Double(Int(Date().timeIntervalSince(start) * 1000))),
++        ])
++    }
++}
+diff --git a/DeviceKitTests/JSONRPC/JSONRPCDispatcher.swift b/DeviceKitTests/JSONRPC/JSONRPCDispatcher.swift
+index 3b7ae85..1c06d08 100644
+--- a/DeviceKitTests/JSONRPC/JSONRPCDispatcher.swift
++++ b/DeviceKitTests/JSONRPC/JSONRPCDispatcher.swift
+@@ -31,6 +31,8 @@ final class JSONRPCDispatcher {
+         registerHandler(ClipboardGetMethodHandler())
+         registerHandler(ClipboardSetMethodHandler())
+         registerHandler(DeviceSettingsApplyMethodHandler())
++        registerHandler(IOFillMethodHandler())
++        registerHandler(IOFindMethodHandler())
+     }
+ 
+     func registerHandler<T: RPCMethodHandler>(_ handler: T) {
+diff --git a/DeviceKitTests/Utilities/AXClientProxy.h b/DeviceKitTests/Utilities/AXClientProxy.h
+index da90c0c..86a9151 100644
+--- a/DeviceKitTests/Utilities/AXClientProxy.h
++++ b/DeviceKitTests/Utilities/AXClientProxy.h
+@@ -77,6 +77,14 @@ NS_ASSUME_NONNULL_BEGIN
+ - (nullable NSString *)viewControllerClassNameForProcessIdentifier:(int)pid
+     NS_SWIFT_NAME(viewControllerClassName(forProcessIdentifier:));
+ 
++/// A snapshot of the app with this pid that fetches only the attributes behind
++/// these snapshot key paths ("label", "frame"...), as a dictionaryRepresentation.
++/// Every attribute left out is one less round of work in the accessibility server,
++/// which is what makes it cheaper than XCUIElement.snapshot(). Nil on any failure.
++- (nullable NSDictionary<XCUIElementAttributeName, id> *)snapshotDictionaryForProcessIdentifier:(int)pid
++                                                                                       keyPaths:(NSArray<NSString *> *)keyPaths
++    NS_SWIFT_NAME(snapshotDictionary(forProcessIdentifier:keyPaths:));
++
+ @end
+ 
+ NS_ASSUME_NONNULL_END
+diff --git a/DeviceKitTests/Utilities/AXClientProxy.m b/DeviceKitTests/Utilities/AXClientProxy.m
+index 864aff0..784ef8e 100644
+--- a/DeviceKitTests/Utilities/AXClientProxy.m
++++ b/DeviceKitTests/Utilities/AXClientProxy.m
+@@ -7,6 +7,7 @@
+ #import "XCAXClient_iOS.h"
+ 
+ #import <dlfcn.h>
++#import <objc/message.h>
+ #import "XCAccessibilityElement.h"
+ #import "XCUIDevice.h"
+ 
+@@ -169,4 +170,57 @@ - (nullable NSString *)viewControllerClassNameForProcessIdentifier:(int)pid {
+     return nil == className ? nil : DemangledClassName(className);
+ }
+ 
++#pragma mark - Reduced snapshot
++
++- (nullable NSDictionary<XCUIElementAttributeName, id> *)snapshotDictionaryForProcessIdentifier:(int)pid
++                                                                                       keyPaths:(NSArray<NSString *> *)keyPaths {
++    id element = nil;
++    for (id<XCAccessibilityElement> candidate in [AXClient activeApplications]) {
++        if (candidate.processIdentifier == pid) {
++            element = candidate;
++            break;
++        }
++    }
++    if (nil == element) {
++        return nil;
++    }
++
++    // XCElementSnapshot maps snapshot key paths to the accessibility attributes
++    // behind them; the AX server does not take the key paths themselves
++    // (private API, as WebDriverAgent uses it)
++    Class snapshotClass = NSClassFromString(@"XCElementSnapshot");
++    SEL mapSelector = NSSelectorFromString(@"axAttributesForElementSnapshotKeyPaths:isMacOS:");
++    if (![snapshotClass respondsToSelector:mapSelector]) {
++        return nil;
++    }
++    id attributes = ((id (*)(id, SEL, id, BOOL))objc_msgSend)(snapshotClass, mapSelector, keyPaths, NO);
++    if ([attributes isKindOfClass:NSSet.class]) {
++        attributes = [(NSSet *)attributes allObjects];
++    }
++    if (![attributes isKindOfClass:NSArray.class] || [(NSArray *)attributes count] == 0) {
++        return nil;
++    }
++
++    NSError *error = nil;
++    id result = nil;
++    @try {
++        result = [AXClient requestSnapshotForElement:element
++                                          attributes:attributes
++                                          parameters:[AXClient defaultParameters]
++                                               error:&error];
++    } @catch (NSException *exception) {
++        NSLog(@"Reduced snapshot raised %@: %@", exception.name, exception.reason);
++        return nil;
++    }
++    if (nil == result) {
++        NSLog(@"Reduced snapshot failed: %@", error);
++        return nil;
++    }
++    id snapshot = [result valueForKey:@"rootElementSnapshot"];
++    if (![snapshot respondsToSelector:@selector(dictionaryRepresentation)]) {
++        return nil;
++    }
++    return [snapshot dictionaryRepresentation];
++}
++
+ @end
+diff --git a/DeviceKitTests/XCTest/OrientationGeometry.swift b/DeviceKitTests/XCTest/OrientationGeometry.swift
+index c6e6957..74d7686 100644
+--- a/DeviceKitTests/XCTest/OrientationGeometry.swift
++++ b/DeviceKitTests/XCTest/OrientationGeometry.swift
+@@ -73,6 +73,15 @@ struct OrientationGeometry {
+     ) -> CGPoint {
+         let orientation = actualOrientation()
+ 
++        // XCUIDevice.orientation is the accelerometer, not the UI. A phone
++        // lying sideways while its app stays portrait (portrait-only apps
++        // never rotate) reported landscape, and every tap was rotated onto
++        // the wrong control (a second device, 2026-10-10). Rotate only when the UI
++        // itself is laid out landscape (wider than tall).
++        if width < height {
++            return point
++        }
++
+         switch orientation {
+         case .portrait:
+             return point
+diff --git a/devicekit-ios.xcodeproj/project.pbxproj b/devicekit-ios.xcodeproj/project.pbxproj
+index 4db587e..8f6592c 100644
+--- a/devicekit-ios.xcodeproj/project.pbxproj
++++ b/devicekit-ios.xcodeproj/project.pbxproj
+@@ -41,6 +41,8 @@
+ 		612DE414298426EF003C2BE0 /* EventRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 612DE413298426EF003C2BE0 /* EventRecord.swift */; };
+ 		613E87D7299A64BD00FF8551 /* PointerEventPath.swift in Sources */ = {isa = PBXBuildFile; fileRef = 613E87D6299A64BD00FF8551 /* PointerEventPath.swift */; };
+ 		78147F0F2F27AA6B00E61E3B /* IOText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78147F0E2F27AA6B00E61E3B /* IOText.swift */; };
++		A1B2C3D4E5F60718293A4B5D /* IOFill.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* IOFill.swift */; };
++		A1B2C3D4E5F60718293A4B6D /* IOFind.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6C /* IOFind.swift */; };
+ 		78E4A1B12F5C110200D4F1AA /* IOKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E4A1B02F5C110200D4F1AA /* IOKeys.swift */; };
+ 		78147F3D2F27BDBC00E61E3B /* AppsLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78147F3C2F27BDBC00E61E3B /* AppsLaunch.swift */; };
+ 		78147FCB2F27C04400E61E3B /* IOSwipe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78147FCA2F27C03500E61E3B /* IOSwipe.swift */; };
+@@ -126,6 +128,8 @@
+ 		612DE413298426EF003C2BE0 /* EventRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventRecord.swift; sourceTree = "<group>"; };
+ 		613E87D6299A64BD00FF8551 /* PointerEventPath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointerEventPath.swift; sourceTree = "<group>"; };
+ 		78147F0E2F27AA6B00E61E3B /* IOText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOText.swift; sourceTree = "<group>"; };
++		A1B2C3D4E5F60718293A4B5C /* IOFill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOFill.swift; sourceTree = "<group>"; };
++		A1B2C3D4E5F60718293A4B6C /* IOFind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOFind.swift; sourceTree = "<group>"; };
+ 		78E4A1B02F5C110200D4F1AA /* IOKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOKeys.swift; sourceTree = "<group>"; };
+ 		78147F3C2F27BDBC00E61E3B /* AppsLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppsLaunch.swift; sourceTree = "<group>"; };
+ 		78147FCA2F27C03500E61E3B /* IOSwipe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSwipe.swift; sourceTree = "<group>"; };
+@@ -347,6 +351,8 @@
+ 				78147F3C2F27BDBC00E61E3B /* AppsLaunch.swift */,
+ 				78EA9F902F36611B008B17D3 /* AppsTerminate.swift */,
+ 				78147F0E2F27AA6B00E61E3B /* IOText.swift */,
++				A1B2C3D4E5F60718293A4B5C /* IOFill.swift */,
++				A1B2C3D4E5F60718293A4B6C /* IOFind.swift */,
+ 				78E4A1B02F5C110200D4F1AA /* IOKeys.swift */,
+ 				787C47DC2F228B770027A012 /* DumpUI.swift */,
+ 				787C47DD2F228B770027A012 /* IOTap.swift */,
+@@ -543,6 +549,8 @@
+ 				78EA9F912F36611B008B17D3 /* AppsTerminate.swift in Sources */,
+ 				52D8FAB02D6DD4100015FAB3 /* FBConfiguration.m in Sources */,
+ 				78147F0F2F27AA6B00E61E3B /* IOText.swift in Sources */,
++				A1B2C3D4E5F60718293A4B5D /* IOFill.swift in Sources */,
++				A1B2C3D4E5F60718293A4B6D /* IOFind.swift in Sources */,
+ 				78E4A1B12F5C110200D4F1AA /* IOKeys.swift in Sources */,
+ 				6124329E2A4DA5BB00F5F619 /* AXElement.swift in Sources */,
+ 				52E35D432A654F67001D97A8 /* RunningApp.swift in Sources */,

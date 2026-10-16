@@ -1,0 +1,9 @@
+waldoes
+Copyright 2026 Alex Lee
+
+This product depends on, and runner/runner.patch modifies, software by
+Mobile Next HQ, Inc.:
+  - mobilecli    https://github.com/mobile-next/mobilecli
+  - devicekit-ios https://github.com/mobile-next/devicekit-ios
+Both are licensed under the Functional Source License, Version 1.1, ALv2 Future
+License. Their terms apply to those components and to the patched runner.

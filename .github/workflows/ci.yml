@@ -1,0 +1,13 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: iph/go.mod
+      - run: go vet ./... && go test ./...
+        working-directory: iph
+      - run: bash -n scripts/*.sh
