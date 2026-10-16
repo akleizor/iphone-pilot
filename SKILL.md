@@ -11,7 +11,7 @@ agent. mobilecli itself needs USB; `iph` starts the same agent via `xcodebuild`
 mobilecli's client and `@eN` formatter as a library.
 
 ```bash
-I=<this skill folder>/bin/iphone-pilot   # short alias: iph. missing? (cd <this skill folder>/iph && go build -o ../bin/iphone-pilot .)
+I=<this skill folder>/bin/iph   # missing? (cd <this skill folder>/iph && go build -o ../bin/iph .)
 $I launch com.apple.Preferences && $I scrollto "General" && $I tap "General"
 $I dump                                        # read screen: @eN refs
 $I tap @e12 && $I dump                         # act on a ref, re-read

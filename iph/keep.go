@@ -109,19 +109,15 @@ func build() error {
 		return err
 	}
 	skill := filepath.Clean(filepath.Join(filepath.Dir(exe), ".."))
-	cmd := exec.Command("go", "build", "-o", filepath.Join(skill, "bin", "iphone-pilot"), ".")
+	cmd := exec.Command("go", "build", "-o", filepath.Join(skill, "bin", "iph"), ".")
 	cmd.Dir = filepath.Join(skill, "iph")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return err
 	}
-	// iph is the short alias; keep it so muscle memory and existing wiring work.
-	alias := filepath.Join(skill, "bin", "iph")
-	_ = os.Remove(alias)
-	_ = os.Symlink("iphone-pilot", alias)
 	if err := buildOCR(filepath.Join(skill, "bin", "iph-ocr")); err != nil {
 		return err
 	}
-	fmt.Println("built bin/iphone-pilot (alias bin/iph) and bin/iph-ocr; no app was installed")
+	fmt.Println("built bin/iph and bin/iph-ocr; no app was installed")
 	return nil
 }

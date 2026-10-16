@@ -56,8 +56,8 @@ A routine Settings flow takes 4–12 s end to end on a recent iPhone
 
 ```bash
 git clone https://github.com/akleizor/iphone-pilot && cd iphone-pilot
-(cd iph && go build -o ../bin/iphone-pilot .) && bin/iphone-pilot build   # binary (alias: iph) + OCR helper
-bin/iphone-pilot setup                                  # phone, runner, start: each step once
+(cd iph && go build -o ../bin/iph .) && bin/iph build   # the iph binary + OCR helper
+bin/iph setup                                           # phone, runner, start: each step once
 ```
 
 `iph setup` finds the trusted iPhone, writes `~/.config/iph/devices.json`,
@@ -69,7 +69,7 @@ it lists them; pick one with `--device <UUID>`. `--team` overrides the team.
 
 ```text
 Install iphone-pilot from https://github.com/akleizor/iphone-pilot on this Mac so you can drive my iPhone.
-Build it as the README says and run `bin/iphone-pilot setup`. If it reports something
+Build it as the README says and run `bin/iph setup`. If it reports something
 only I can do (sign in to Xcode, tap Trust, turn on Developer Mode, unlock the
 phone), tell me exactly what and wait. Then run `bin/iph doctor` and, once the
 agent answers, `bin/iph launch com.apple.Preferences && bin/iph dump`.
