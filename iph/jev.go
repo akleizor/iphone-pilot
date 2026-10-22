@@ -735,7 +735,7 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 			}
 			n, _ := strconv.Atoi(va.Choice)
 			v := o.values[n-1]
-			if err := typeInto(c, target.el, v.text); err != nil {
+			if err := typeInto(c, els, target.el, v.text); err != nil {
 				return err
 			}
 			act = fmt.Sprintf("typed value %q into %q", v.name, elLabel(target.el))

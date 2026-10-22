@@ -70,7 +70,7 @@ func fill(c *devicekit.DeviceKitClient, args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := typeInto(c, f, p[1]); err != nil {
+		if err := typeInto(c, els, f, p[1]); err != nil {
 			return fmt.Errorf("%q: %w", p[0], err)
 		}
 		shown := p[1]
@@ -146,20 +146,35 @@ func unresolved(err error) bool {
 
 // typeInto taps a field, proves it holds keyboard focus (a tap that leaves the
 // keyboard on the previous field would type there), clears an old value, and
-// types. Up to three taps, then it refuses rather than type blind.
-func typeInto(c *devicekit.DeviceKitClient, f *types.ScreenElement, text string) error {
+// types. Up to three taps, then it refuses rather than type blind. els is the
+// dump f came from: f's place in form order there identifies it later.
+func typeInto(c *devicekit.DeviceKitClient, els []types.ScreenElement, f *types.ScreenElement, text string) error {
 	typ := f.Type
+	wantWV, wantN, haveSlot := formPos(els, func(e *types.ScreenElement) bool { return e == f })
 	x, y := f.Rect.X+f.Rect.Width/2, f.Rect.Y+f.Rect.Height/2
-	var els []types.ScreenElement
 	var err error
 	focused := false
+	// The target holds focus when it matches by label or, because a web view
+	// labels a filled field by its value and may relabel it on focus, by form order.
+	isTarget := func(els []types.ScreenElement) *types.ScreenElement {
+		cur := focusedEl(els)
+		if cur == nil || cur.Type != typ {
+			return nil
+		}
+		if deref(cur.Label) == deref(f.Label) && deref(cur.Placeholder) == deref(f.Placeholder) {
+			return cur
+		}
+		if wv, n, ok := formPos(els, func(e *types.ScreenElement) bool { return e == cur }); haveSlot && ok && wv == wantWV && n == wantN {
+			return cur
+		}
+		return nil
+	}
 	check := func() error {
 		if els, err = dump(c); err != nil {
 			return err
 		}
-		cur := focusedEl(els)
 		// Not by rect: a web page scrolls the field when it takes focus.
-		focused = cur != nil && cur.Type == typ && deref(cur.Label) == deref(f.Label) && deref(cur.Placeholder) == deref(f.Placeholder)
+		focused = isTarget(els) != nil
 		return nil
 	}
 	for try := 0; try < 3 && !focused; try++ {
@@ -204,31 +219,86 @@ func typeInto(c *devicekit.DeviceKitClient, f *types.ScreenElement, text string)
 	// Prove what landed: the exact text, or for a secure field the same
 	// number of dots. A stray character made a sign-in fail (2026-10-10).
 	// The tree lags typing by a beat, so re-read briefly before refusing.
-	got := ""
-	until(1500*time.Millisecond, 200*time.Millisecond, func() bool {
-		if els, err = dump(c); err != nil {
-			return true
+	secure := typ == "SecureTextField"
+	verify := func() (got string, mismatch error, err error) {
+		until(1500*time.Millisecond, 200*time.Millisecond, func() bool {
+			if els, err = dump(c); err != nil {
+				return true
+			}
+			got = ""
+			if e := cur(); e != nil {
+				got = deref(e.Value)
+			}
+			if secure {
+				return utf8.RuneCountInString(got) == utf8.RuneCountInString(text)
+			}
+			return got == text
+		})
+		if err != nil {
+			return got, nil, err
 		}
-		got = ""
-		if e := cur(); e != nil {
-			got = deref(e.Value)
+		if secure {
+			if n, m := utf8.RuneCountInString(got), utf8.RuneCountInString(text); n != m {
+				mismatch = fmt.Errorf("secure field holds %d characters, typed %d", n, m)
+			}
+		} else if got != text {
+			mismatch = fmt.Errorf("field holds %q, typed %q", got, text)
 		}
-		if typ == "SecureTextField" {
-			return utf8.RuneCountInString(got) == utf8.RuneCountInString(text)
+		return got, mismatch, nil
+	}
+	got, mismatch, err := verify()
+	if err != nil || mismatch == nil || isTarget(els) == nil {
+		// Not retyped when focus is no longer proven: typing blind is worse than failing.
+		if err != nil {
+			return err
 		}
-		return got == text
-	})
-	if err != nil {
+		return mismatch
+	}
+	// The web view dropped a key. Clear and retype once, a rune at a time so it keeps up.
+	if got != "" && got != deref(cur().Placeholder) {
+		if err := c.PressKeys(backspaces(utf8.RuneCountInString(got))); err != nil {
+			return err
+		}
+	}
+	for _, r := range text {
+		if err := c.SendKeys(string(r)); err != nil {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, mismatch, err = verify(); err != nil {
 		return err
 	}
-	if typ == "SecureTextField" {
-		if utf8.RuneCountInString(got) != utf8.RuneCountInString(text) {
-			return fmt.Errorf("secure field holds %d characters, typed %d", utf8.RuneCountInString(got), utf8.RuneCountInString(text))
+	return mismatch
+}
+
+// formPos is where the first element satisfying match sits among the elements of
+// its own Type, in dump order, within its nearest WebView (numbered in dump order;
+// -1 outside any). Form order survives a page scrolling or a field relabelling.
+func formPos(els []types.ScreenElement, match func(*types.ScreenElement) bool) (wv, n int, ok bool) {
+	views := map[*types.ScreenElement]int{}
+	count := map[[2]string]int{}
+	walk(els, nil, func(e *types.ScreenElement, anc []*types.ScreenElement) {
+		if e.Type == "WebView" {
+			views[e] = len(views)
 		}
-	} else if got != text {
-		return fmt.Errorf("field holds %q, typed %q", got, text)
-	}
-	return nil
+		if ok {
+			return
+		}
+		scope := -1
+		for _, a := range anc {
+			if i, isView := views[a]; isView {
+				scope = i
+			}
+		}
+		key := [2]string{e.Type, fmt.Sprint(scope)}
+		if match(e) {
+			wv, n, ok = scope, count[key], true
+			return
+		}
+		count[key]++
+	})
+	return
 }
 
 // field finds one text field by its label, placeholder, identifier or value.
