@@ -177,6 +177,9 @@ func typeInto(c *devicekit.DeviceKitClient, els []types.ScreenElement, f *types.
 		focused = isTarget(els) != nil
 		return nil
 	}
+	if err := check(); err != nil {
+		return err
+	}
 	for try := 0; try < 3 && !focused; try++ {
 		if err := c.Tap(x, y); err != nil {
 			return err

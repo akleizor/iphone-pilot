@@ -22,6 +22,7 @@ type fakeForm struct {
 	relabel   bool // a focused field is labelled by its value, as a web view does
 	dropFirst bool // the first multi-character text call loses its last character
 	calls     []string
+	taps      int
 }
 
 func (f *fakeForm) serve(t *testing.T) *devicekit.DeviceKitClient {
@@ -51,6 +52,7 @@ func (f *fakeForm) serve(t *testing.T) *devicekit.DeviceKitClient {
 			view := map[string]any{"type": "XCUIElementTypeWebView", "rect": map[string]int{"x": 0, "y": 0, "width": 400, "height": 800}, "children": kids}
 			result = map[string]any{"type": "XCUIElementTypeOther", "rect": map[string]int{"x": 0, "y": 0, "width": 400, "height": 800}, "children": []any{view}}
 		case "device.io.tap":
+			f.taps++
 			var p struct{ Y float64 }
 			_ = json.Unmarshal(req.Params, &p)
 			f.focus = int(p.Y-100) / 60
@@ -107,5 +109,22 @@ func TestTypeIntoRetypesOnceWhenAKeyIsDropped(t *testing.T) {
 	}
 	if n := len(f.calls); n != 1+8 || f.calls[1] != "P" {
 		t.Fatalf("want one full send then one rune per call, got %q", f.calls)
+	}
+}
+
+func TestTypeIntoKeepsAlreadyFocusedField(t *testing.T) {
+	f := &fakeForm{typ: []string{"TextField", "SecureTextField"}, label: []string{"Email", "Password"},
+		text: []string{"", ""}, focus: 0}
+	c := f.serve(t)
+	els, _ := dump(c)
+	email, err := field(els, "Email")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := typeInto(c, els, email, "person@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if f.taps != 0 || f.text[0] != "person@example.com" || f.text[1] != "" {
+		t.Fatalf("want existing email focus preserved without tapping; taps=%d values=%q", f.taps, f.text)
 	}
 }
