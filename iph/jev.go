@@ -402,8 +402,18 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 	// in front. "Open Notifications in Slack" must not jump to iOS Settings.
 	// replay is the same run as `iph batch` steps: a flow done once can be rerun
 	// with no model. Typing is left out (values are named, never recorded).
+	if runSavedReplay(c, o) {
+		return nil
+	}
 	var replay []string
 	replayable := true
+	blind := false // an OCR tap is replayed by point, not found by label
+	finish := func() {
+		printReplay(replay, replayable)
+		if replayable && !blind && len(replay) > 0 {
+			storeReplay(o, replay)
+		}
+	}
 	if title, link := deepLinkFor(o.goal); link != "" && aboutSettings(c, o.goal) {
 		// A prefs: link opens Settings on that page from whatever app is in front.
 		t0 := time.Now()
@@ -414,7 +424,7 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 			// proof: check the navigation bar, no model call needed.
 			if goalEndsOn(o.goal, title) && navTitleIs(c, title, 2*time.Second) {
 				fmt.Printf("done: deep link in %.1fs (navigation bar reads %q)\n", time.Since(t0).Seconds(), title)
-				printReplay(replay, true)
+				finish()
 				return nil
 			}
 		}
@@ -488,9 +498,16 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 		lastScreen = screen
 		if untilSeen(o.until, screen) {
 			fmt.Printf("done: %q on screen after %d action(s) in %.1fs\n", o.until, i-1, time.Since(start).Seconds())
-			printReplay(replay, replayable)
+			finish()
 			remember(els)
 			return nil
+		}
+		// The tree is read while Jev decides, so an OCR tap can be saved by its
+		// label (OCR text is not a tree label) at no extra wait.
+		var treeCh chan []types.ScreenElement
+		if mode == "ocr" {
+			treeCh = make(chan []types.ScreenElement, 1)
+			go func() { t, _, _ := dumpText(c); treeCh <- t }()
 		}
 		items, context := table(els, h)
 		// "Search" is a trap for navigation goals: tapping it swaps the list
@@ -677,7 +694,7 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 				return stop(fmt.Sprintf("Jev chose DONE but %q is not on screen", o.until))
 			}
 			fmt.Printf("done: %d action(s) in %.1fs (verify the outcome independently)\n", i-1, time.Since(start).Seconds())
-			printReplay(replay, replayable)
+			finish()
 			remember(els)
 			return nil
 		case "BLOCKED":
@@ -699,6 +716,10 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 			fmt.Println("dry run: nothing executed")
 			return nil
 		}
+		var tree []types.ScreenElement
+		if treeCh != nil {
+			tree = <-treeCh // the device is not shared with a dump in flight
+		}
 		act := op.Choice
 		switch op.Choice {
 		case "TAP":
@@ -716,8 +737,13 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 				pending = tapErr
 			}
 			act = fmt.Sprintf("tapped %q", elLabel(target.el))
-			if mode == "ocr" { // OCR text is not a tree label ("AA Display & Text Size"): replay the point
-				replay = append(replay, "sleep:1200", fmt.Sprintf("tap:%d,%d", x, y))
+			if mode == "ocr" { // OCR text is not a tree label ("AA Display & Text Size")
+				if lab := labelAt(tree, x, y); lab != "" {
+					replay = append(replay, "wait:"+lab+":5", "tap:"+lab)
+				} else {
+					replay = append(replay, "sleep:1200", fmt.Sprintf("tap:%d,%d", x, y))
+					blind = true
+				}
 			} else {
 				replay = append(replay, "wait:"+elLabel(target.el)+":5", "tap:"+elLabel(target.el))
 			}

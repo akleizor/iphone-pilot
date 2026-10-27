@@ -356,3 +356,24 @@ func TestCoveredByFullScreenToolbarOverLongList(t *testing.T) {
 		t.Fatalf("full-screen Toolbar reported as cover: %v", o.Type)
 	}
 }
+
+func TestLabelAtPicksSmallestUniqueLabel(t *testing.T) {
+	cell, text, dup := "Display & Text Size", "Text", "On"
+	r := func(x, y, w, h int) types.ScreenElementRect { return types.ScreenElementRect{X: x, Y: y, Width: w, Height: h} }
+	els := []types.ScreenElement{
+		{Type: "Cell", Label: &cell, Rect: r(0, 100, 400, 50), Children: []types.ScreenElement{
+			{Type: "StaticText", Label: &text, Rect: r(10, 110, 50, 20)},
+		}},
+		{Type: "Switch", Label: &dup, Rect: r(300, 200, 60, 30)},
+		{Type: "Switch", Label: &dup, Rect: r(300, 300, 60, 30)},
+	}
+	if got := labelAt(els, 20, 115); got != "Text" {
+		t.Fatalf("inner label: got %q", got)
+	}
+	if got := labelAt(els, 200, 120); got != cell {
+		t.Fatalf("cell label: got %q", got)
+	}
+	if got := labelAt(els, 310, 210); got != "" {
+		t.Fatalf("ambiguous label must not be saved: got %q", got)
+	}
+}

@@ -73,8 +73,12 @@ See `references/connection.md` for pairing and the explicit remote commands.
 2. **`iph fill "FIELD=VALUE"… [--submit LABEL]`** for forms: one call, each field's
    focus proven before typing and its value after. `VALUE` of `$NAME` reads a secret
    from the environment. Use it for every sign-in form; it needs no model.
-3. **`iph flow "GOAL"`** for the rest: Jev picks each step from the screen stream.
-4. **`iph batch`** when you already know every step.
+3. **`iph batch`** when you already know every step: one call, no model, ~0.5 s a
+   step. Write the whole sequence yourself for an app you know; it beats asking Jev
+   (~1.5 s and an occasional wrong pick per step).
+4. **`iph flow "GOAL"`** for the rest: Jev picks each step from the screen stream.
+   A finished flow is saved; the same goal next time replays it with no model and
+   falls back to Jev if the screen differs. Keep the goal text identical to reuse it.
 
 ### flow: goal-driven (Jev)
 
@@ -129,7 +133,7 @@ An action exits **0** when applied; **1** when it was not (iph or the runner
 refused it, or it was never sent), safe to retry after a fresh `dump`; **3**
 when it was sent but no answer came back: it may have happened, so read the
 screen before retrying. A finished `flow` prints `replay: iph batch …`, the
-same run with no model; keep it to rerun the task.
+same run with no model, and saves it for the same goal.
 
 ## Rules
 
