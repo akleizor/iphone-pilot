@@ -50,9 +50,39 @@ func dump(c *devicekit.DeviceKitClient) ([]types.ScreenElement, error) {
 	if err != nil {
 		return nil, err
 	}
+	// An app asking to read the clipboard (JD on every launch) blocks the screen
+	// behind a system alert: refuse it, which keeps the clipboard private, and read again.
+	if deny := pasteDeny(els); deny != nil {
+		x, y := center(deny)
+		if c.Tap(x, y) == nil {
+			time.Sleep(300 * time.Millisecond)
+			if els, err = c.GetSourceElements(); err != nil {
+				return nil, err
+			}
+		}
+	}
 	types.AttachRefs(els)
 	annotate(els)
 	return els, nil
+}
+
+// pasteDeny is the refuse button of a "would like to paste" alert, or nil.
+func pasteDeny(els []types.ScreenElement) *types.ScreenElement {
+	var alert bool
+	var deny *types.ScreenElement
+	walk(els, nil, func(e *types.ScreenElement, _ []*types.ScreenElement) {
+		l := deref(e.Label)
+		if strings.Contains(l, "would like to paste") || strings.Contains(l, "粘贴") || strings.Contains(l, "貼上") {
+			alert = true
+		}
+		if e.Type == "Button" && (strings.HasPrefix(l, "Don’t Allow Paste") || strings.HasPrefix(l, "Don't Allow Paste") || l == "不允许粘贴" || l == "不允許貼上") {
+			deny = e
+		}
+	})
+	if !alert {
+		return nil
+	}
+	return deny
 }
 
 // dumpAndRemember is the user-facing dump: it records ref -> sig for later checks.

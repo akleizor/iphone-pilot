@@ -430,7 +430,23 @@ func run(cmd string, args []string) error {
 		return err
 	case "url":
 		need(args, 1)
-		return openURL(c, args[0])
+		if err := openURL(c, args[0]); err != nil {
+			return err
+		}
+		// a page or app still loading after the switch: return once two reads match (6 s at most)
+		last := ""
+		for deadline := time.Now().Add(6 * time.Second); time.Now().Before(deadline); {
+			_, text, err := dumpText(c)
+			if err != nil {
+				return err
+			}
+			if text == last {
+				return nil
+			}
+			last = text
+			time.Sleep(200 * time.Millisecond)
+		}
+		return nil
 	case "app":
 		app, err := c.GetActiveAppInfo()
 		if err != nil {
@@ -861,8 +877,18 @@ func onOff(e *types.ScreenElement) string {
 // clear empties the focused (or given) text field: select-all + delete, then
 // per-character backspace if the field doesn't support select-all.
 // focusedEl is the element holding keyboard focus, or nil.
+// Safari can flag every element of a web page as focused, so a flagged text
+// field wins over the first flagged element.
 func focusedEl(els []types.ScreenElement) *types.ScreenElement {
-	return find(els, func(e *types.ScreenElement) bool { return e.Focused != nil && *e.Focused })
+	focused := func(e *types.ScreenElement) bool { return e.Focused != nil && *e.Focused }
+	if f := find(els, func(e *types.ScreenElement) bool { return focused(e) && textEntry(e.Type) }); f != nil {
+		return f
+	}
+	return find(els, focused)
+}
+
+func textEntry(t string) bool {
+	return t == "TextField" || t == "SecureTextField" || t == "SearchField" || t == "TextView"
 }
 
 // backspaces is n delete presses (the agent rejects null modifiers).

@@ -169,12 +169,24 @@ func typeInto(c *devicekit.DeviceKitClient, els []types.ScreenElement, f *types.
 		}
 		return nil
 	}
+	tapped := false
+	// A search box that opens an overlay on tap (HKTVmall, many shops) hands focus to
+	// the overlay's own field: after our tap, any focused text field but Safari's
+	// address bar is the one to type into.
+	overlay := func(els []types.ScreenElement) bool {
+		cur := focusedEl(els)
+		return tapped && cur != nil && textEntry(cur.Type) &&
+			(deref(cur.Label) != "Address" || deref(f.Label) == "Address")
+	}
 	check := func() error {
 		if els, err = dump(c); err != nil {
 			return err
 		}
 		// Not by rect: a web page scrolls the field when it takes focus.
 		focused = isTarget(els) != nil
+		if !focused && overlay(els) {
+			focused, typ = true, focusedEl(els).Type
+		}
 		return nil
 	}
 	if err := check(); err != nil {
@@ -184,6 +196,7 @@ func typeInto(c *devicekit.DeviceKitClient, els []types.ScreenElement, f *types.
 		if err := c.Tap(x, y); err != nil {
 			return err
 		}
+		tapped = true
 		time.Sleep(time.Duration(80+150*try) * time.Millisecond)
 		if err := check(); err != nil {
 			return err

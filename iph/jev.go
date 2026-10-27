@@ -339,7 +339,11 @@ func dumpText(c *devicekit.DeviceKitClient) ([]types.ScreenElement, string, erro
 // risky labels end a run unless the caller opted in: Jev must not be the one
 // to buy, delete, erase or sign out.
 var riskyWords = []string{"delete", "remove", "erase", "reset", "sign out", "log out", "logout",
-	"buy", "purchase", "subscribe", "pay ", "pay\u00a0", "confirm payment", "uninstall", "factory"}
+	"buy", "purchase", "subscribe", "pay ", "pay\u00a0", "confirm payment", "uninstall", "factory",
+	"allow paste", // an app asking to read the clipboard
+	// Chinese shopping and account apps (Taobao, JD, HKTVmall)
+	"购买", "購買", "下单", "下單", "提交订单", "提交訂單", "支付", "付款", "结算", "結算", "删除", "刪除",
+	"退出登录", "退出登錄", "登出", "订阅", "訂閱", "确认收货", "確認收貨"}
 
 func risky(label string) bool {
 	l := strings.ToLower(label) + " "
@@ -654,7 +658,8 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 		// is a near coin-flip, is risky by its own label, or repeats a
 		// sequence that already failed to change the screen.
 		floor := o.minConf
-		if op.Choice == "SCROLL_DOWN" || op.Choice == "SCROLL_UP" || op.Choice == "TAP" {
+		// all reversible: a tap, a scroll, or typing a named value into a field
+		if op.Choice == "SCROLL_DOWN" || op.Choice == "SCROLL_UP" || op.Choice == "TAP" || op.Choice == "TYPE_TEXT" {
 			floor = min(o.minConf, 0.3)
 		}
 		if op.Confidence < floor {
@@ -682,6 +687,9 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 				return stop(fmt.Sprintf("low target confidence (%.2f) for %s; choices above", ta.Confidence, kind))
 			}
 			target = byKind[kind][ta.Choice]
+			if g := strings.ToLower(o.goal); kind == "TYPE_TEXT" && elLabel(target.el) == "Address" && !strings.Contains(g, "address") && !strings.Contains(g, "url") {
+				return stop("the page has no search field of its own, only Safari's address bar; open the site's search URL instead (iph url)")
+			}
 			line += fmt.Sprintf("  [%s] %s %q p=%.2f", target.idx, target.el.Type, elLabel(target.el), ta.Confidence)
 			if risky(elLabel(target.el)) && !o.allowRisky {
 				return stop(fmt.Sprintf("%q looks irreversible; rerun with --allow-risky if intended", elLabel(target.el)))

@@ -379,3 +379,16 @@ func TestLabelAtPicksSmallestUniqueLabel(t *testing.T) {
 		t.Fatalf("ambiguous label must not be saved: got %q", got)
 	}
 }
+
+func TestPasteDenyOnlyInsidePasteAlert(t *testing.T) {
+	msg, deny, other := "“JD” would like to paste from “iPhone”", "Don’t Allow Paste", "Don’t Allow Paste"
+	alert := []types.ScreenElement{{Type: "Alert", Children: []types.ScreenElement{
+		{Type: "StaticText", Label: &msg}, {Type: "Button", Label: &deny},
+	}}}
+	if b := pasteDeny(alert); b == nil || deref(b.Label) != deny {
+		t.Fatalf("paste alert: got %v", b)
+	}
+	if b := pasteDeny([]types.ScreenElement{{Type: "Button", Label: &other}}); b != nil {
+		t.Fatal("a lone button must not be tapped without the alert text")
+	}
+}

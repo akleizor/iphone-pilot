@@ -24,7 +24,21 @@ func openURL(c *devicekit.DeviceKitClient, u string) error {
 		"--device", deviceUUID, "--payload-url", u, "com.apple.Preferences").Run() == nil {
 		return nil
 	}
-	return c.OpenURL(u)
+	before := ""
+	if app, err := c.GetActiveAppInfo(); err == nil {
+		before = app.BundleID
+	}
+	if err := c.OpenURL(u); err != nil {
+		return err
+	}
+	// Return once another app is in front, so the next read is not the old app's
+	// screen; a link the front app handles itself leaves it there (3 s at most).
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if app, err := c.GetActiveAppInfo(); err != nil || app.BundleID != before {
+			return nil
+		}
+	}
+	return nil
 }
 
 // settingsPages maps a Settings page's visible title to its deep link. When a
