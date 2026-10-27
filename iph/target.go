@@ -237,7 +237,7 @@ func lastSig(ref string) (sig, bool) {
 
 func resolveLabel(els []types.ScreenElement, label string) (*types.ScreenElement, error) {
 	names := func(e *types.ScreenElement) []string {
-		return []string{deref(e.Label), deref(e.Text), deref(e.Name), deref(e.Identifier)}
+		return []string{deref(e.Label), deref(e.Text), deref(e.Name), deref(e.Identifier), deref(e.Placeholder)} // dump shows a field by its placeholder
 	}
 	collect := func(match func(string) bool) []*types.ScreenElement {
 		var out []*types.ScreenElement
