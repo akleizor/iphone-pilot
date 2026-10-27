@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/mobile-next/mobilecli/devices/devicekit"
@@ -29,22 +30,28 @@ func loadReplays() map[string][]string {
 
 func storeReplay(o doOpts, steps []string) {
 	m := loadReplays()
-	if steps == nil {
-		delete(m, replayKey(o))
-	} else {
-		m[replayKey(o)] = steps
-	}
+	m[replayKey(o)] = steps
+	writeReplays(m)
+}
+
+func forgetReplay(o doOpts) {
+	m := loadReplays()
+	delete(m, replayKey(o))
+	writeReplays(m)
+}
+
+func writeReplays(m map[string][]string) {
 	if b, err := json.MarshalIndent(m, "", "  "); err == nil && os.MkdirAll(filepath.Dir(replayFile), 0o755) == nil {
 		_ = os.WriteFile(replayFile, b, 0o644)
 	}
 }
 
-// runSavedReplay reports whether a saved replay finished the goal. A replay
-// that fails is forgotten, so the next run plans afresh.
-func runSavedReplay(c *devicekit.DeviceKitClient, o doOpts) bool {
+// runSavedReplay reports whether a saved replay finished the goal, and whether
+// one was tried. A replay that fails is forgotten, so a later run plans afresh.
+func runSavedReplay(c *devicekit.DeviceKitClient, o doOpts) (done, tried bool) {
 	steps := loadReplays()[replayKey(o)]
 	if len(steps) == 0 || o.dryRun || len(o.values) > 0 {
-		return false
+		return false, false
 	}
 	t0 := time.Now()
 	chains, err := parseSteps(steps)
@@ -56,28 +63,29 @@ func runSavedReplay(c *devicekit.DeviceKitClient, o doOpts) bool {
 	}
 	if err != nil {
 		fmt.Printf("saved replay failed (%v); planning with Jev\n", err)
-		storeReplay(o, nil)
-		return false
+		forgetReplay(o)
+		return false, true
 	}
 	fmt.Printf("done: saved replay in %.1fs, no model (%d steps)\n", time.Since(t0).Seconds(), len(steps))
-	return true
+	return true, true
 }
 
 // labelAt is the label of the smallest tree element under (x, y) that names
 // exactly one element, or "" when none does.
 func labelAt(tree []types.ScreenElement, x, y int) string {
-	best, area := "", 0
+	var under []*types.ScreenElement
 	walk(tree, nil, func(e *types.ScreenElement, _ []*types.ScreenElement) {
-		r := e.Rect
-		l := elLabel(e)
-		if l == "" || x < r.X || y < r.Y || x >= r.X+r.Width || y >= r.Y+r.Height {
-			return
-		}
-		if a := r.Width * r.Height; best == "" || a < area {
-			if _, err := resolveLabel(tree, l); err == nil {
-				best, area = l, a
-			}
+		if elLabel(e) != "" && rectHas(e.Rect, x, y) {
+			under = append(under, e)
 		}
 	})
-	return best
+	slices.SortStableFunc(under, func(a, b *types.ScreenElement) int {
+		return a.Rect.Width*a.Rect.Height - b.Rect.Width*b.Rect.Height
+	})
+	for _, e := range under {
+		if _, err := resolveLabel(tree, elLabel(e)); err == nil {
+			return elLabel(e)
+		}
+	}
+	return ""
 }

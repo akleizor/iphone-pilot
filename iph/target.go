@@ -310,8 +310,7 @@ func coveredBy(els []types.ScreenElement, target *types.ScreenElement, x, y int)
 				return // a descendant of the target is part of it
 			}
 		}
-		r := e.Rect
-		if x >= r.X && x < r.X+r.Width && y >= r.Y && y < r.Y+r.Height {
+		if rectHas(e.Rect, x, y) {
 			hit = e
 		}
 	})
@@ -353,4 +352,8 @@ func dismissKeyboard(c *devicekit.DeviceKitClient) {
 		_ = c.PressKeys(keys)
 	}
 	time.Sleep(300 * time.Millisecond)
+}
+
+func rectHas(r types.ScreenElementRect, x, y int) bool {
+	return x >= r.X && x < r.X+r.Width && y >= r.Y && y < r.Y+r.Height
 }

@@ -402,15 +402,18 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 	// in front. "Open Notifications in Slack" must not jump to iOS Settings.
 	// replay is the same run as `iph batch` steps: a flow done once can be rerun
 	// with no model. Typing is left out (values are named, never recorded).
-	if runSavedReplay(c, o) {
+	done, tried := runSavedReplay(c, o)
+	if done {
 		return nil
 	}
 	var replay []string
 	replayable := true
-	blind := false // an OCR tap is replayed by point, not found by label
+	// saved only when every tap is found by label, and only from a clean start: after a
+	// failed replay this run records just the rest of the task
+	save := !tried
 	finish := func() {
 		printReplay(replay, replayable)
-		if replayable && !blind && len(replay) > 0 {
+		if replayable && save && len(replay) > 0 {
 			storeReplay(o, replay)
 		}
 	}
@@ -507,7 +510,7 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 		var treeCh chan []types.ScreenElement
 		if mode == "ocr" {
 			treeCh = make(chan []types.ScreenElement, 1)
-			go func() { t, _, _ := dumpText(c); treeCh <- t }()
+			go func() { t, _ := dump(c); treeCh <- t }()
 		}
 		items, context := table(els, h)
 		// "Search" is a trap for navigation goals: tapping it swaps the list
@@ -737,15 +740,15 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 				pending = tapErr
 			}
 			act = fmt.Sprintf("tapped %q", elLabel(target.el))
+			lab := elLabel(target.el)
 			if mode == "ocr" { // OCR text is not a tree label ("AA Display & Text Size")
-				if lab := labelAt(tree, x, y); lab != "" {
-					replay = append(replay, "wait:"+lab+":5", "tap:"+lab)
-				} else {
-					replay = append(replay, "sleep:1200", fmt.Sprintf("tap:%d,%d", x, y))
-					blind = true
-				}
+				lab = labelAt(tree, x, y)
+			}
+			if lab != "" {
+				replay = append(replay, "wait:"+lab+":5", "tap:"+lab)
 			} else {
-				replay = append(replay, "wait:"+elLabel(target.el)+":5", "tap:"+elLabel(target.el))
+				replay = append(replay, "sleep:1200", fmt.Sprintf("tap:%d,%d", x, y))
+				save = false
 			}
 		case "TOGGLE":
 			r := target.el.Rect

@@ -359,7 +359,9 @@ func TestCoveredByFullScreenToolbarOverLongList(t *testing.T) {
 
 func TestLabelAtPicksSmallestUniqueLabel(t *testing.T) {
 	cell, text, dup := "Display & Text Size", "Text", "On"
-	r := func(x, y, w, h int) types.ScreenElementRect { return types.ScreenElementRect{X: x, Y: y, Width: w, Height: h} }
+	r := func(x, y, w, h int) types.ScreenElementRect {
+		return types.ScreenElementRect{X: x, Y: y, Width: w, Height: h}
+	}
 	els := []types.ScreenElement{
 		{Type: "Cell", Label: &cell, Rect: r(0, 100, 400, 50), Children: []types.ScreenElement{
 			{Type: "StaticText", Label: &text, Rect: r(10, 110, 50, 20)},
