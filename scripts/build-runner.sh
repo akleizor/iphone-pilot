@@ -31,7 +31,7 @@ sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = \"com\.mobilenext\./PRODUCT_BUNDLE_IDEN
   devicekit-ios.xcodeproj/project.pbxproj
 
 OUT=$(mktemp -d "$SRC/dd.new.XXXX")
-xcodebuild build-for-testing -quiet -allowProvisioningUpdates \
+xcodebuild build-for-testing -quiet -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
   -project devicekit-ios.xcodeproj -scheme devicekit-ios \
   -destination "platform=iOS,id=$DEVICE" \
   DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic IPHONEOS_DEPLOYMENT_TARGET=15.0 -derivedDataPath "$OUT"
