@@ -33,11 +33,10 @@ func openURL(c *devicekit.DeviceKitClient, u string) error {
 	}
 	// Return once another app is in front, so the next read is not the old app's
 	// screen; a link the front app handles itself leaves it there (3 s at most).
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		if app, err := c.GetActiveAppInfo(); err != nil || app.BundleID != before {
-			return nil
-		}
-	}
+	until(3*time.Second, 100*time.Millisecond, func() bool {
+		app, err := c.GetActiveAppInfo()
+		return err != nil || app.BundleID != before
+	})
 	return nil
 }
 

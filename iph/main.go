@@ -435,18 +435,17 @@ func run(cmd string, args []string) error {
 		}
 		// a page or app still loading after the switch: return once two reads match (6 s at most)
 		last := ""
-		for deadline := time.Now().Add(6 * time.Second); time.Now().Before(deadline); {
-			_, text, err := dumpText(c)
-			if err != nil {
-				return err
+		var err error
+		until(6*time.Second, 200*time.Millisecond, func() bool {
+			var text string
+			if _, text, err = dumpText(c); err != nil {
+				return true
 			}
-			if text == last {
-				return nil
-			}
+			same := text == last
 			last = text
-			time.Sleep(200 * time.Millisecond)
-		}
-		return nil
+			return same
+		})
+		return err
 	case "app":
 		app, err := c.GetActiveAppInfo()
 		if err != nil {
@@ -881,15 +880,14 @@ func onOff(e *types.ScreenElement) string {
 // field wins over the first flagged element.
 func focusedEl(els []types.ScreenElement) *types.ScreenElement {
 	focused := func(e *types.ScreenElement) bool { return e.Focused != nil && *e.Focused }
-	if f := find(els, func(e *types.ScreenElement) bool { return focused(e) && textEntry(e.Type) }); f != nil {
+	if f := find(els, func(e *types.ScreenElement) bool { return focused(e) && fieldTypes[e.Type] }); f != nil {
 		return f
 	}
 	return find(els, focused)
 }
 
-func textEntry(t string) bool {
-	return t == "TextField" || t == "SecureTextField" || t == "SearchField" || t == "TextView"
-}
+// addressBar: Safari's own URL field, which a page's text entry must never be confused with.
+func addressBar(e *types.ScreenElement) bool { return deref(e.Label) == "Address" }
 
 // backspaces is n delete presses (the agent rejects null modifiers).
 func backspaces(n int) []devicekit.KeyCombo {

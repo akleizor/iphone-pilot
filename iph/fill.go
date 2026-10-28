@@ -175,8 +175,7 @@ func typeInto(c *devicekit.DeviceKitClient, els []types.ScreenElement, f *types.
 	// address bar is the one to type into.
 	overlay := func(els []types.ScreenElement) bool {
 		cur := focusedEl(els)
-		return tapped && cur != nil && textEntry(cur.Type) &&
-			(deref(cur.Label) != "Address" || deref(f.Label) == "Address")
+		return tapped && cur != nil && fieldTypes[cur.Type] && (!addressBar(cur) || addressBar(f))
 	}
 	check := func() error {
 		if els, err = dump(c); err != nil {

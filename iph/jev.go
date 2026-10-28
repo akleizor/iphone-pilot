@@ -687,7 +687,7 @@ func doGoal(c *devicekit.DeviceKitClient, args []string) error {
 				return stop(fmt.Sprintf("low target confidence (%.2f) for %s; choices above", ta.Confidence, kind))
 			}
 			target = byKind[kind][ta.Choice]
-			if g := strings.ToLower(o.goal); kind == "TYPE_TEXT" && elLabel(target.el) == "Address" && !strings.Contains(g, "address") && !strings.Contains(g, "url") {
+			if g := strings.ToLower(o.goal); kind == "TYPE_TEXT" && addressBar(target.el) && !strings.Contains(g, "address") && !strings.Contains(g, "url") {
 				return stop("the page has no search field of its own, only Safari's address bar; open the site's search URL instead (iph url)")
 			}
 			line += fmt.Sprintf("  [%s] %s %q p=%.2f", target.idx, target.el.Type, elLabel(target.el), ta.Confidence)
