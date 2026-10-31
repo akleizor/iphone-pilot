@@ -158,7 +158,7 @@ read     dump [--json] | ocr | app | screenshot [--full] <file> | clipboard
 touch    tap <t> | doubletap <t> | longpress <t> [ms] | toggle <t>
          drag <t> <t> [ms] | pinch <in|out> [<t>] [distance]
          swipe <up|down|left|right|x1,y1,x2,y2> [ms]   direction = finger movement
-type     text <string> | clear [<t>] | keys <combo>... (e.g. command+a backspace return)
+type     text <string>|$ENV | clear [<t>] | keys <combo>... (e.g. command+a backspace return)
          button <HOME|LOCK|VOLUME_UP|VOLUME_DOWN|ENTER>
 batch    batch <step>...  a whole flow in one call, one liveness probe for all of it
          tap:L dbl:L press:L[:ms] drag:A>B togg:L swipe:dir[:ms] text:S
@@ -358,7 +358,14 @@ func run(cmd string, args []string) error {
 		return c.Swipe(x1, y1, x2, y2, intArg(args, 1, 0))
 	case "text":
 		need(args, 1)
-		return c.SendKeys(strings.Join(args, " "))
+		text := strings.Join(args, " ")
+		if env, isEnv := strings.CutPrefix(text, "$"); isEnv && len(args) == 1 {
+			// `$NAME` reads environment variable NAME, so a secret never sits in argv (as in fill).
+			if text = os.Getenv(env); text == "" {
+				return fmt.Errorf("$%s is empty", env)
+			}
+		}
+		return c.SendKeys(text)
 	case "keys":
 		need(args, 1)
 		keys, err := combos(args)
