@@ -39,7 +39,7 @@ prove reachability. A disconnected local route need not rule out a remote route.
 
 1. Establish Apple host trust locally using USB or an already trusted Wi-Fi path.
    Enable Developer Mode if required. Never reset or copy pairing credentials.
-2. Run `iph remote setup`. This owns `.runtime/` under the skill and pins
+2. Run `iph remote setup`. This owns `remote-venv/` in the state dir and pins
    `pymobiledevice3==11.21.0`. It uses Homebrew Python 3.13+ with OpenSSL, overridable
    through `IPH_PYTHON`; it never installs into global Python or transfers secrets.
 3. Run `iph remote pair --udid <hardware-UDID>`. It requires existing Apple trust,

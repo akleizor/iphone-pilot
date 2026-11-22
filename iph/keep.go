@@ -8,6 +8,7 @@ package main
 // `iph build` compiles iph and its OCR helper into bin/.
 
 import (
+	"crypto/sha256"
 	_ "embed"
 	"fmt"
 	"os"
@@ -73,10 +74,11 @@ func keep() error {
 	}
 }
 
-// ocrBinary returns the OCR helper next to iph, compiling the embedded source
-// once when it is missing or older than this iph build.
+// ocrBinary returns the OCR helper beside iph (iph build, Homebrew) when it is
+// not older than iph; otherwise it compiles the embedded source once per version
+// into the state dir, so the install dir is never written.
 func ocrBinary() (string, error) {
-	exe, err := os.Executable()
+	exe, err := executable()
 	if err != nil {
 		return "", err
 	}
@@ -85,6 +87,14 @@ func ocrBinary() (string, error) {
 		if ei, err := os.Stat(exe); err == nil && !bi.ModTime().Before(ei.ModTime()) {
 			return bin, nil
 		}
+	}
+	sum := sha256.Sum256([]byte(ocrSource))
+	bin = filepath.Join(stateDir, fmt.Sprintf("iph-ocr-%x", sum[:6]))
+	if _, err := os.Stat(bin); err == nil {
+		return bin, nil
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return "", err
 	}
 	return bin, buildOCR(bin)
 }
@@ -95,20 +105,41 @@ func buildOCR(bin string) error {
 		return err
 	}
 	defer os.Remove(src)
-	out, err := exec.Command("swiftc", "-O", "-o", bin, src).CombinedOutput()
+	// built aside and renamed, so a concurrent caller never runs a half-written helper
+	tmp := fmt.Sprintf("%s.%d.tmp", bin, os.Getpid())
+	out, err := exec.Command("swiftc", "-O", "-o", tmp, src).CombinedOutput()
 	if err != nil {
+		os.Remove(tmp)
 		return fmt.Errorf("building iph-ocr: %v: %s", err, out)
 	}
-	return nil
+	return os.Rename(tmp, bin)
+}
+
+// executable is this binary's real path: macOS reports a symlink's own path,
+// and installDir must name the folder the binary actually sits in.
+func executable() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(exe)
+}
+
+// installDir holds bin/, scripts/ and runner/ (a checkout or Homebrew's libexec); iph only reads it.
+func installDir() (string, error) {
+	exe, err := executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(filepath.Dir(exe)), nil
 }
 
 // build compiles iph from its source and the OCR helper into bin/.
 func build() error {
-	exe, err := os.Executable()
+	skill, err := installDir()
 	if err != nil {
 		return err
 	}
-	skill := filepath.Clean(filepath.Join(filepath.Dir(exe), ".."))
 	cmd := exec.Command("go", "build", "-o", filepath.Join(skill, "bin", "iph"), ".")
 	cmd.Dir = filepath.Join(skill, "iph")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

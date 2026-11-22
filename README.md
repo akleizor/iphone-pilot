@@ -55,6 +55,12 @@ A routine Settings flow takes 4–12 s end to end on a recent iPhone
 ## Install
 
 ```bash
+brew install akleizor/tap/iph && iph setup
+```
+
+Or from source:
+
+```bash
 git clone https://github.com/akleizor/iphone-pilot && cd iphone-pilot
 (cd iph && go build -o ../bin/iph .) && bin/iph build   # the iph binary + OCR helper
 bin/iph setup                                           # phone, runner, start: each step once

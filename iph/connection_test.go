@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -61,5 +63,20 @@ func TestDoctorReportsMissingAgent(t *testing.T) {
 	if !strings.Contains(string(data), `"agent":false`) || !strings.Contains(string(data), `"developer_connection":true`) ||
 		!strings.Contains(string(data), `"agent_error"`) {
 		t.Fatalf("wrong capabilities: %s", data)
+	}
+}
+
+// Without a fresh helper beside iph, the OCR helper comes from the state dir: a Homebrew install dir is read-only.
+func TestStateNotInInstallDir(t *testing.T) {
+	old := stateDir
+	stateDir = t.TempDir()
+	defer func() { stateDir = old }()
+	sum := sha256.Sum256([]byte(ocrSource))
+	cached := filepath.Join(stateDir, fmt.Sprintf("iph-ocr-%x", sum[:6]))
+	if err := os.WriteFile(cached, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if bin, err := ocrBinary(); err != nil || bin != cached {
+		t.Fatalf("ocrBinary = %q, %v; want the state-dir helper %q", bin, err, cached)
 	}
 }

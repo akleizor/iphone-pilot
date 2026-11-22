@@ -84,11 +84,11 @@ func setup(args []string) error {
 			}
 			team = teams[0]
 		}
-		exe, err := os.Executable()
+		skill, err := installDir()
 		if err != nil {
 			return err
 		}
-		script := filepath.Join(filepath.Dir(exe), "..", "scripts", "build-runner.sh")
+		script := filepath.Join(skill, "scripts", "build-runner.sh")
 		cmd := exec.Command(script, team)
 		if prefix != "" {
 			cmd.Args = append(cmd.Args, prefix)

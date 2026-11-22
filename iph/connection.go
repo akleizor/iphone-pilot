@@ -43,13 +43,12 @@ func remoteCommand(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: iph remote setup|pair|doctor|screenshot PATH|run [options]")
 	}
-	exe, err := os.Executable()
+	skill, err := installDir()
 	if err != nil {
 		return err
 	}
-	skill := filepath.Clean(filepath.Join(filepath.Dir(exe), ".."))
 	script := filepath.Join(skill, "scripts", "remote.py")
-	python := filepath.Join(skill, ".runtime", "bin", "python")
+	python := filepath.Join(stateDir, "remote-venv", "bin", "python") // remote-setup.sh's venv
 	var cmd *exec.Cmd
 	// Setup is explicit, uses a private venv, and never installs globally.
 	if args[0] == "setup" {
@@ -65,7 +64,7 @@ func remoteCommand(args []string) error {
 		}
 		cmd = exec.Command(python, append([]string{script}, args...)...)
 	}
-	cmd.Env = append(os.Environ(), "IPH_DEVICE="+deviceUUID, "IPH_PORT="+port)
+	cmd.Env = append(os.Environ(), "IPH_STATE="+stateDir, "IPH_DEVICE="+deviceUUID, "IPH_PORT="+port)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }
