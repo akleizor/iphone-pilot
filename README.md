@@ -50,7 +50,7 @@ A routine Settings flow takes 4–12 s end to end on a recent iPhone
 - An iPhone with Developer Mode on, trusted by this Mac and on the same Wi-Fi.
 - An Apple ID added in Xcode > Settings > Accounts. A free one works; its
   signing lasts 7 days, so the runner is rebuilt weekly.
-- For `flow` only: a TypeSafe API key in `TYPESAFE_API_KEY`.
+- For `flow` only: a TypeSafe API key in `TYPESAFE_API_KEY`. `TYPESAFE_URL` points it at another server speaking the same API, such as a local decider.
 
 ## Install
 

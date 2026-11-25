@@ -27,7 +27,14 @@ import (
 	"github.com/mobile-next/mobilecli/types"
 )
 
-const jevURL = "https://api.typesafe.ai/v1/systemone"
+// jevURL is TYPESAFE_URL when set (a server speaking the same API, such as a local decider), else the cloud: the
+// cloud answered 402 once its credit ran out while the agent's sessions already named a local one (2026-11-25).
+var jevURL = func() string {
+	if u := os.Getenv("TYPESAFE_URL"); u != "" {
+		return u
+	}
+	return "https://api.typesafe.ai/v1/systemone"
+}()
 
 var jevHTTP = &http.Client{Timeout: 20 * time.Second}
 
